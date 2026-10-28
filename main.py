@@ -12,7 +12,7 @@ bot = telebot.TeleBot(API_TOKEN)
 subscribed_chats = set()
 user_data = {}
 
-# Глобальные хранилища для отслеживания уникальности триггеров по таймфреймам
+# Хранилища для уникальности триггеров
 last_triggered = {
     '5': {},
     '15': {},
@@ -34,19 +34,16 @@ def run_health_server():
     server.serve_forever()
 
 def get_active_market_symbols():
-    """Получение всех торгуемых USDT-папар на Bybit без ограничений"""
     try:
         url = "https://bybit.com"
         resp = requests.get(url, timeout=10).json()
         if resp.get('retCode') == 0 and 'result' in resp and 'list' in resp['result']:
-            # Собираем абсолютно все пары к USDT (обычно около 350-500 монет)
             return [t['symbol'] for t in resp['result']['list'] if t['symbol'].endswith('USDT') and 'DELE' not in t['symbol']]
     except Exception as e:
         print(f"Ошибка получения списка рынка: {e}")
     return []
 
 def check_timeframe_signals(tf_interval, label):
-    """Изолированный сканер конкретного таймфрейма по всему списку монет"""
     print(f"📡 Запущен сканер таймфрейма {label}...")
     
     while True:
@@ -58,7 +55,6 @@ def check_timeframe_signals(tf_interval, label):
                 
             for symbol in symbols:
                 try:
-                    # Запрос свечей для таймфрейма tf_interval
                     url = f"https://bybit.com{symbol}&interval={tf_interval}&limit=3"
                     k_resp = requests.get(url, timeout=5).json()
                     
@@ -71,15 +67,19 @@ def check_timeframe_signals(tf_interval, label):
                         time.sleep(0.1)
                         continue
 
-                    # Bybit:  - текущая свеча,  - сигнальная закрытая,  - прошлая опорная
-                    current_ts = int(klines[0][0])
+                    # Правильный разбор индексов Bybit свечей (от новых к старым)
+                    current_candle = klines[0]
+                    prev_candle = klines[1]
+                    older_candle = klines[2]
+
+                    current_ts = int(current_candle[0])
                     
-                    p_high = float(klines[1][3])
-                    p_low = float(klines[1][4])
-                    p_close = float(klines[1][2])
+                    p_high = float(prev_candle[2])
+                    p_low = float(prev_candle[3])
+                    p_close = float(prev_candle[4])
                     
-                    o_high = float(klines[2][3])
-                    o_low = float(klines[2][4])
+                    o_high = float(older_candle[2])
+                    o_low = float(older_candle[3])
 
                     if symbol not in last_triggered[tf_interval]:
                         last_triggered[tf_interval][symbol] = 0
@@ -92,7 +92,7 @@ def check_timeframe_signals(tf_interval, label):
                     entry_price = 0.0
                     stop_loss = 0.0
 
-                    # Математическая логика ложного пробоя (свип ликвидности китами)
+                    # Логика ложного пробоя
                     if p_high > o_high and p_close < o_high:
                         signal_type = f"ШОРТ 🔴 (Свип хая на {label})"
                         entry_price = p_close
@@ -117,7 +117,7 @@ def check_timeframe_signals(tf_interval, label):
                                 f"🪙 **Монета:** #{symbol}\n"
                                 f"⏱️ **Таймфрейм:** {label}\n"
                                 f"📊 **Сигнал:** {signal_type}\n\n"
-                                f"🗺️ *Анализ:* Зафиксирован ложный пробой экстремума. Крупный игрок собрал стопы розничных трейдеров и защищает ценовой диапазон.\n\n"
+                                f"🗺️ *Анализ:* Зафиксирован ложный пробой экстремума. Кит собрал стопы толпы и защищает ценовой диапазон.\n\n"
                                 f"⚔️ **Математика сделки (Риск ${FIXED_RISK:.2f}):**\n"
                                 f"🔹 Вход (Рыночный): `{entry_price}`\n"
                                 f"🛑 Стоп-Лосс: `{stop_loss:.5f}`\n"
@@ -136,13 +136,11 @@ def check_timeframe_signals(tf_interval, label):
                                 except Exception:
                                     pass
                     
-                    # Микропауза для стабильности сетевого потока
-                    time.sleep(0.2)
+                    time.sleep(0.1)
                 except Exception:
                     time.sleep(0.1)
                     continue
                     
-            # Небольшой отдых перед следующим циклом сканирования таймфрейма
             time.sleep(5)
         except Exception:
             time.sleep(10)
@@ -161,7 +159,7 @@ def cmd_start(message):
         "🚀 **Глобальный 3-ТФ Мега-Радар запущен в облаке 24/7!**\n\n"
         "🔥 Зона поиска: **Весь фьючерсный рынок Bybit (350-500 монет)**.\n"
         "⏱️ Таймфреймы отслеживания: **5 Минут, 15 Минут, 1 Час**.\n\n"
-        "Я непрерывно ищу следы маркетмейкеров. Сигналы будут приходить в этот чат автоматически по мере закрытия свечей."
+        "Я непрерывно ищу следы маркетмейкеров. Сигналы будут приходить в этот чат автоматически."
     )
     bot.send_message(uid, welcome, reply_markup=markup)
 
@@ -213,12 +211,9 @@ def process_manual_stop(message):
         bot.send_message(message.chat.id, "Ошибка в расчете.")
 
 if __name__ == '__main__':
-    # Распределяем мониторинг таймфреймов по независимым фоновым потокам
     threading.Thread(target=check_timeframe_signals, args=('5', '5 минут'), daemon=True).start()
     threading.Thread(target=check_timeframe_signals, args=('15', '15 минут'), daemon=True).start()
     threading.Thread(target=check_timeframe_signals, args=('60', '1 час'), daemon=True).start()
     
-    # Запуск фейкового веб-сервера для удержания Render
     threading.Thread(target=run_health_server, daemon=True).start()
-    
     bot.infinity_polling()
