@@ -1,2 +1,4 @@
-pyTelegramBotAPI
+ccxt
 requests
+asyncio
+pytz
