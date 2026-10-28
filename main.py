@@ -230,11 +230,3 @@ def process_manual_stop(message):
         bot.send_message(message.chat.id, f"Ошибка в расчетах. Убедитесь, что ввели число.")
 
 if __name__ == '__main__':
-    # Запуск проверочного веб-сервера (для Render)
-threading.Thread(target=run_health_server, daemon=True).start()
-# Запуск независимых параллельных потоков сканирования Bybit
-threading.Thread(target=check_timeframe_signals, args=('5', '5М'), daemon=True).start()
-threading.Thread(target=check_timeframe_signals, args=('15', '15М'), daemon=True).start()
-threading.Thread(target=check_timeframe_signals, args=('60', '1Ч'), daemon=True).start()
-print("🚀 Исправленный Бот-Радар успешно запущен...")
-bot.infinity_polling()
