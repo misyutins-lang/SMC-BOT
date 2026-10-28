@@ -28,6 +28,7 @@ class HealthCheckServer(BaseHTTPRequestHandler):
         self.wfile.write(b"All-time Scan Engine Active")
 
 def run_health_server():
+    # Render требует слушать хост 0.0.0.0 и порт из переменной окружения PORT
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), HealthCheckServer)
     print(f"🌍 Сервер контроля запущен на порту {port}...")
@@ -67,25 +68,21 @@ def check_timeframe_signals(tf_interval, label):
                         time.sleep(0.1)
                         continue
 
-                    # КОРРЕКТНЫЙ РАЗБОР СВЕЧЕЙ (Bybit возвращает от новых к старым):
                     prev_candle = klines[1]
                     historical_candles = klines[2:26]
 
-                    # Уникальный временной штамп закрытой свечи
                     prev_ts = int(prev_candle[0])
                     
                     p_high = float(prev_candle[2])
                     p_low = float(prev_candle[3])
                     p_close = float(prev_candle[4])
                     
-                    # Ищем сильные экстремумы (полки ликвидности) за исторический период
                     highest_pool = max([float(k[2]) for k in historical_candles])
                     lowest_pool = min([float(k[3]) for k in historical_candles])
 
                     if symbol not in last_triggered[tf_interval]:
                         last_triggered[tf_interval][symbol] = 0
 
-                    # Проверяем, обрабатывали ли мы уже эту конкретную закрытую свечу
                     if prev_ts <= last_triggered[tf_interval][symbol]:
                         time.sleep(0.02)
                         continue
@@ -94,7 +91,6 @@ def check_timeframe_signals(tf_interval, label):
                     entry_price = 0.0
                     stop_loss = 0.0
 
-                    # Логика истинного ложного пробоя полки ликвидности
                     if p_high > highest_pool and p_close < highest_pool:
                         signal_type = f"ШОРТ 🔴 (Свип пула сверху за 24 свечи)"
                         entry_price = p_close
@@ -138,12 +134,12 @@ def check_timeframe_signals(tf_interval, label):
                                 except Exception:
                                     pass
                     
-                    time.sleep(0.05) # Плавный обход лимитов API Bybit
+                    time.sleep(0.05)
                 except Exception:
                     time.sleep(0.05)
                     continue
                     
-            time.sleep(10) # Пауза перед новым полным циклом сканирования рынка
+            time.sleep(10)
         except Exception:
             time.sleep(15)
 
@@ -229,4 +225,11 @@ def process_manual_stop(message):
     except Exception:
         bot.send_message(message.chat.id, f"Ошибка в расчетах. Убедитесь, что ввели число.")
 
-# ПРЯМОЙ ИСПРАВЛЕННЫЙ ЗАПУСК БЕЗ КОНСТРУКЦИИ IF
+# Запуск веб-сервера на фоне для успешного прохождения проверки Render
+threading.Thread(target=run_health_server, daemon=True).start()
+
+# Запуск сканеров Bybit
+threading.Thread(target=check_timeframe_signals, args=('5', '5М'), daemon=True).start()
+threading.Thread(target=check_timeframe_signals, args=('15', '15М'), daemon=True).start()
+threading.Thread(target=check_timeframe_signals, args=('60', '1Ч'), daemon=True).start()
+
