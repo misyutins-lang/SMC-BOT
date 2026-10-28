@@ -1,8 +1,9 @@
-import telebot
-import requests
+import os
 import time
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import telebot
+import requests
 
 # Данные для подключения
 API_TOKEN = '9092035955:AAGgezhvmZtyOY-2mpGntUQ4ReWh4Cvs8BQ'
@@ -12,7 +13,7 @@ bot = telebot.TeleBot(API_TOKEN)
 subscribed_chats = set()
 user_data = {}
 
-# Хранилища для уникальности триггеров
+# Хранилища для уникальности триггеров (фиксируем по закрыстым свечам)
 last_triggered = {
     '5': {},
     '15': {},
@@ -27,7 +28,6 @@ class HealthCheckServer(BaseHTTPRequestHandler):
         self.wfile.write(b"All-time Scan Engine Active")
 
 def run_health_server():
-    import os
     port = int(os.environ.get("PORT", 10000))
     server = HTTPServer(('0.0.0.0', port), HealthCheckServer)
     print(f"🌍 Сервер контроля запущен на порту {port}...")
@@ -55,7 +55,7 @@ def check_timeframe_signals(tf_interval, label):
                 
             for symbol in symbols:
                 try:
-                    url = f"https://bybit.com{symbol}&interval={tf_interval}&limit=3"
+                    url = f"https://bybit.com{symbol}&interval={tf_interval}&limit=30"
                     k_resp = requests.get(url, timeout=5).json()
                     
                     if k_resp.get('retCode') != 0 or not k_resp.get('result') or not k_resp['result'].get('list'):
@@ -63,48 +63,53 @@ def check_timeframe_signals(tf_interval, label):
                         continue
                         
                     klines = k_resp['result']['list']
-                    if len(klines) < 3:
+                    if len(klines) < 25:
                         time.sleep(0.1)
                         continue
 
-                    # Правильный разбор индексов Bybit свечей (от новых к старым)
-                    current_candle = klines[0]
+                    # КОРРЕКТНЫЙ РАЗБОР СВЕЧЕЙ (Bybit возвращает от новых к старым):
+                    # klines[0] — текущая живая свеча (её пропускаем, чтобы избежать шума)
+                    # klines[1] — первая полностью закрытая свеча (её анализируем)
+                    # klines[2:26] — история из 24 закрытых свечей для поиска пула ликвидности
                     prev_candle = klines[1]
-                    older_candle = klines[2]
+                    historical_candles = klines[2:26]
 
-                    current_ts = int(current_candle[0])
+                    # Уникальный временной штамп закрытой свечи
+                    prev_ts = int(prev_candle[0])
                     
                     p_high = float(prev_candle[2])
                     p_low = float(prev_candle[3])
                     p_close = float(prev_candle[4])
                     
-                    o_high = float(older_candle[2])
-                    o_low = float(older_candle[3])
+                    # Ищем сильные экстремумы (полки ликвидности) за исторический период
+                    highest_pool = max([float(k[2]) for k in historical_candles])
+                    lowest_pool = min([float(k[3]) for k in historical_candles])
 
                     if symbol not in last_triggered[tf_interval]:
                         last_triggered[tf_interval][symbol] = 0
 
-                    if current_ts <= last_triggered[tf_interval][symbol]:
-                        time.sleep(0.1)
+                    # Проверяем, обрабатывали ли мы уже эту конкретную закрытую свечу
+                    if prev_ts <= last_triggered[tf_interval][symbol]:
+                        time.sleep(0.02)
                         continue
 
                     signal_type = None
                     entry_price = 0.0
                     stop_loss = 0.0
 
-                    # Логика ложного пробоя
-                    if p_high > o_high and p_close < o_high:
-                        signal_type = f"ШОРТ 🔴 (Свип хая на {label})"
+                    # Логика истинного ложного пробоя полки ликвидности
+                    if p_high > highest_pool and p_close < highest_pool:
+                        signal_type = f"ШОРТ 🔴 (Свип пула сверху за 24 свечи)"
                         entry_price = p_close
                         stop_loss = p_high + (p_high * 0.0004)
 
-                    elif p_low < o_low and p_close > o_low:
-                        signal_type = f"ЛОНГ 🟢 (Свип лоя на {label})"
+                    elif p_low < lowest_pool and p_close > lowest_pool:
+                        signal_type = f"ЛОНГ 🟢 (Свип пула снизу за 24 свечи)"
                         entry_price = p_close
                         stop_loss = p_low - (p_low * 0.0004)
 
                     if signal_type and subscribed_chats:
-                        last_triggered[tf_interval][symbol] = current_ts
+                        last_triggered[tf_interval][symbol] = prev_ts
                         stop_dist = abs(entry_price - stop_loss)
 
                         if stop_dist > 0:
@@ -113,11 +118,11 @@ def check_timeframe_signals(tf_interval, label):
                             tp = entry_price + (stop_dist * 2) if "ЛОНГ" in signal_type else entry_price - (stop_dist * 2)
 
                             alert_text = (
-                                f"⚡ **SMC МЕГА-РАДАР (ВЕСЬ МАРКЕТ)** ⚡\n\n"
+                                f"⚡ **SMC РАДАР ЛИКВИДНОСТИ** ⚡\n\n"
                                 f"🪙 **Монета:** #{symbol}\n"
                                 f"⏱️ **Таймфрейм:** {label}\n"
                                 f"📊 **Сигнал:** {signal_type}\n\n"
-                                f"🗺️ *Анализ:* Зафиксирован ложный пробой экстремума. Кит собрал стопы толпы и защищает ценовой диапазон.\n\n"
+                                f"🗺️ *Анализ:* Снят крупный пул ликвидности. Крупный игрок забрал стопы толпы и разворачивает цену.\n\n"
                                 f"⚔️ **Математика сделки (Риск ${FIXED_RISK:.2f}):**\n"
                                 f"🔹 Вход (Рыночный): `{entry_price}`\n"
                                 f"🛑 Стоп-Лосс: `{stop_loss:.5f}`\n"
@@ -127,7 +132,7 @@ def check_timeframe_signals(tf_interval, label):
                                 f"🧱 **Необходимая маржа:**\n"
                                 f"• Плечо 10х: ${total_val/10:.2f}\n"
                                 f"• Плечо 20х: ${total_val/20:.2f}\n\n"
-                                f"⚠️ *Внимание: Перед открытием ордера убедитесь в наличии слома структуры на младшем графике!*"
+                                f"⚠️ *Внимание: Перед входом убедитесь в наличии слома структуры (CHoCH) на младшем таймфрейме!*"
                             )
 
                             for chat_id in subscribed_chats:
@@ -136,14 +141,14 @@ def check_timeframe_signals(tf_interval, label):
                                 except Exception:
                                     pass
                     
-                    time.sleep(0.1)
+                    time.sleep(0.05) # Плавный обход лимитов API Bybit
                 except Exception:
-                    time.sleep(0.1)
+                    time.sleep(0.05)
                     continue
                     
-            time.sleep(5)
+            time.sleep(10) # Пауза перед новым полным циклом сканирования рынка
         except Exception:
-            time.sleep(10)
+            time.sleep(15)
 
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
@@ -156,10 +161,10 @@ def cmd_start(message):
     markup.add(btn_calc, btn_status)
     
     welcome = (
-        "🚀 **Глобальный 3-ТФ Мега-Радар запущен в облаке 24/7!**\n\n"
-        "🔥 Зона поиска: **Весь фьючерсный рынок Bybit (350-500 монет)**.\n"
-        "⏱️ Таймфреймы отслеживания: **5 Минут, 15 Минут, 1 Час**.\n\n"
-        "Я непрерывно ищу следы маркетмейкеров. Сигналы будут приходить в этот чат автоматически."
+        "🚀 **Глобальный SMC-Радар ликвидности активен 24/7!**\n\n"
+        "🔥 Зона поиска: **Весь фьючерсный рынок Bybit (USDT)**.\n"
+        "⏱️ Сетка таймфреймов: **5 Минут, 15 Минут, 1 Час**.\n\n"
+        "Алгоритм полностью исправлен и ищет крупные пулы за 24 свечи. Ожидайте автоматических сигналов в этом чате."
     )
     bot.send_message(uid, welcome, reply_markup=markup)
 
@@ -170,7 +175,7 @@ def cmd_status(message):
         f"📡 **Мульти-таймфрейм сканер Bybit активен**\n"
         f"🌍 Охват: Весь фьючерсный рынок (все USDT-пары)\n"
         f"⏱️ Сетка анализа: 5М | 15М | 1Ч одновременно\n"
-        f"📉 Алгоритм: Импульсный свип ликвидности\n"
+        f"📉 Алгоритм: Свип истинной ликвидности за 24 свечи\n"
         f"🧮 Параметры: Риск строго ${FIXED_RISK:.2f} на сделку."
     )
 
@@ -193,27 +198,43 @@ def process_manual_stop(message):
         uid = message.from_user.id
         stop = float(message.text.replace(',', '.'))
         entry = user_data[uid]['entry']
-        stop_distance = abs(entry - stop)
         
+        stop_distance = abs(entry - stop)
+        if stop_distance == 0:
+            bot.send_message(message.chat.id, "Ошибка: Стоп-лосс не может быть равен цене входа.")
+            return
+
         pos_size = FIXED_RISK / stop_distance
         total_val = pos_size * entry
-        tp = entry + (stop_distance * 2) if entry > stop else entry - (stop_distance * 2)
         
-        res = (
-            f"📊 **Ручной Расчет (Риск ${FIXED_RISK}):**\n"
-            f"🔹 Вход: `{entry}` | Стоп: `{stop}`\n"
-            f"🎯 Тейк (1:2): `{tp:.4f}`\n\n"
-            f"💰 Объем: `{pos_size:.2f}` монет (${total_val:.2f})\n"
-            f"🧱 Маржа: 10х = `${total_val/10:.2f}` | 20х = `${total_val/20:.2f}`"
-        )
-        bot.send_message(message.chat.id, res, parse_mode="Markdown")
-    except Exception:
-        bot.send_message(message.chat.id, "Ошибка в расчете.")
+        is_long = entry > stop
+        tp = entry + (stop_distance * 2) if is_long else entry - (stop_distance * 2)
+        direction = "ЛОНГ 🟢" if is_long else "ШОРТ 🔴"
 
-if __name__ == '__main__':
-    threading.Thread(target=check_timeframe_signals, args=('5', '5 минут'), daemon=True).start()
-    threading.Thread(target=check_timeframe_signals, args=('15', '15 минут'), daemon=True).start()
-    threading.Thread(target=check_timeframe_signals, args=('60', '1 час'), daemon=True).start()
-    
-    threading.Thread(target=run_health_server, daemon=True).start()
-    bot.infinity_polling()
+        calc_text = (
+            f"📊 **Результаты ручного расчета ({direction})**\n\n"
+            f"🔹 Вход: `{entry}`\n"
+            f"🛑 Стоп-Лосс: `{stop}`\n"
+            f"🎯 Тейк-Профит (1:2): `{tp:.5f}`\n\n"
+            f"💰 **Объем позиции:** `{pos_size:.2f}` монет\n"
+            f"💎 Стоимость позиции: ${total_val:.2f}\n"
+            f"🧱 **Необходимая маржа:**\n"
+            f"• Плечо 10х: ${total_val/10:.2f}\n"
+            f"• Плечо 20х: ${total_val/20:.2f}\n"
+            f"• Плечо 50х: ${total_val/50:.2f}\n\n"
+            f"💵 Фиксированный риск: ${FIXED_RISK:.2f}"
+        )
+bot.send_message(message.chat.id, calc_text, parse_mode="Markdown")
+if uid in user_data:
+del user_data[uid]
+except Exception:
+bot.send_message(message.chat.id, f"Ошибка в расчетах. Убедитесь, что ввели число.")
+if name == 'main':
+# Запуск проверочного веб-сервера (для Render)
+threading.Thread(target=run_health_server, daemon=True).start()
+# Запуск независимых параллельных потоков сканирования Bybit
+threading.Thread(target=check_timeframe_signals, args=('5', '5М'), daemon=True).start()
+threading.Thread(target=check_timeframe_signals, args=('15', '15М'), daemon=True).start()
+threading.Thread(target=check_timeframe_signals, args=('60', '1Ч'), daemon=True).start()
+print("🚀 Исправленный Бот-Радар успешно запущен...")
+bot.infinity_polling()
