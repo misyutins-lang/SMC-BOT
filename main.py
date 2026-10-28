@@ -13,7 +13,7 @@ bot = telebot.TeleBot(API_TOKEN)
 subscribed_chats = set()
 user_data = {}
 
-# Хранилища для уникальности триггеров (фиксируем по закрыстым свечам)
+# Хранилища для уникальности триггеров (фиксируем по закрытым свечам)
 last_triggered = {
     '5': {},
     '15': {},
@@ -68,9 +68,6 @@ def check_timeframe_signals(tf_interval, label):
                         continue
 
                     # КОРРЕКТНЫЙ РАЗБОР СВЕЧЕЙ (Bybit возвращает от новых к старым):
-                    # klines[0] — текущая живая свеча (её пропускаем, чтобы избежать шума)
-                    # klines[1] — первая полностью закрытая свеча (её анализируем)
-                    # klines[2:26] — история из 24 закрытых свечей для поиска пула ликвидности
                     prev_candle = klines[1]
                     historical_candles = klines[2:26]
 
@@ -224,13 +221,16 @@ def process_manual_stop(message):
             f"• Плечо 50х: ${total_val/50:.2f}\n\n"
             f"💵 Фиксированный риск: ${FIXED_RISK:.2f}"
         )
-bot.send_message(message.chat.id, calc_text, parse_mode="Markdown")
-if uid in user_data:
-del user_data[uid]
-except Exception:
-bot.send_message(message.chat.id, f"Ошибка в расчетах. Убедитесь, что ввели число.")
-if name == 'main':
-# Запуск проверочного веб-сервера (для Render)
+        bot.send_message(message.chat.id, calc_text, parse_mode="Markdown")
+        
+        if uid in user_data:
+            del user_data[uid]
+            
+    except Exception:
+        bot.send_message(message.chat.id, f"Ошибка в расчетах. Убедитесь, что ввели число.")
+
+if __name__ == '__main__':
+    # Запуск проверочного веб-сервера (для Render)
 threading.Thread(target=run_health_server, daemon=True).start()
 # Запуск независимых параллельных потоков сканирования Bybit
 threading.Thread(target=check_timeframe_signals, args=('5', '5М'), daemon=True).start()
