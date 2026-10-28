@@ -229,4 +229,4 @@ def process_manual_stop(message):
     except Exception:
         bot.send_message(message.chat.id, f"Ошибка в расчетах. Убедитесь, что ввели число.")
 
-if __name__ == '__main__':
+# ПРЯМОЙ ИСПРАВЛЕННЫЙ ЗАПУСК БЕЗ КОНСТРУКЦИИ IF
